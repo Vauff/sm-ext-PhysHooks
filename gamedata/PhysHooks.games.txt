@@ -1,0 +1,32 @@
+"Games"
+{
+	"#default"
+	{
+		"Signatures"
+		{
+			"Physics_RunThinkFunctions"
+			{
+				"library"	"server"
+				"linux"		"@_Z25Physics_RunThinkFunctionsb"
+			}
+
+			"Physics_SimulateEntity"
+			{
+				"library"	"server"
+				"linux"		"@_Z22Physics_SimulateEntityP11CBaseEntity"
+			}
+
+			"CTriggerMoved"
+			{
+				"library"	"engine"
+				"linux"		"@_ZTV13CTriggerMoved"
+			}
+
+			"CTouchLinks"
+			{
+				"library"	"engine"
+				"linux"		"@_ZTV11CTouchLinks"
+			}
+		}
+	}
+}
