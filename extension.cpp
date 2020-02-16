@@ -65,16 +65,36 @@ struct SrcdsPatch
 	bool engine;
 } gs_Patches[] = {
 	// Hook: Replace call inside Physics_RunThinkFunctions
+#if SOURCE_ENGINE == SE_CSS && defined PLATFORM_LINUX
 	{
-		"_Z25Physics_RunThinkFunctionsb",
+		"Physics_RunThinkFunctions",
 		(unsigned char *)"\x8B\x04\x9E\x85\xC0\x74\x13\xA1\x00\x00\x00\x00\x89\x78\x0C\x8B\x04\x9E\x89\x04\x24\xE8\x00\x00\x00\x00",
 		"xxxxxxxx????xxxxxxxxxx????",
 		NULL,
 		0, 0, 0, false
 	}
+#elif SOURCE_ENGINE == SE_CSGO && defined PLATFORM_LINUX
+	{
+		"Physics_RunThinkFunctions",
+		(unsigned char *)"\xA1\x5C\xD8\x42\x01\x89\x78\x10\x8B\x04\x9E\x89\x04\x24\xE8\xAD\xFC\xFF\xFF\x83\xC3\x01\x3B\x5D\xD4\x75\xE5",
+		"x????xxxxxxxxxx????xxxxxxxx",
+		NULL,
+		0, 0, 0, false
+	}
+#elif SOURCE_ENGINE == SE_CSGO && defined PLATFORM_WINDOWS
+	{
+		"Physics_RunThinkFunctions",
+		(unsigned char *)"\x8B\xF0\x0F\x1F\x84\x00\x00\x00\x00\x00\x8B\x0D\xD0\x52\xA3\x10\xF3\x0F\x10\x45\xFC\xF3\x0F\x11\x41\x10\x8B\x0C\xBB\xE8\x18\xFE\xFF\xFF\x47\x3B\xFE\x7C\xE3\x8B\x75\xF4",
+		"xxxxxxxxxxxx????xxxxxxxxxxxxxx????xxxxxxxx",
+		NULL,
+		0, 0, 0, false
+	}
+#else
+#error "Unsupported platform"
+#endif
 };
 
-uintptr_t FindPattern(uintptr_t BaseAddr, const unsigned char *pData, const char *pPattern, size_t MaxSize);
+uintptr_t FindPattern(uintptr_t BaseAddr, const unsigned char *pData, const char *pPattern, size_t MaxSize, bool Reverse=false);
 
 /**
  * @file extension.cpp
@@ -124,7 +144,12 @@ DETOUR_DECL_STATIC1(DETOUR_RunThinkFunctions, void, bool, simulating)
 	}
 }
 
+#if defined PLATFORM_LINUX
 void (*g_pPhysics_SimulateEntity)(CBaseEntity *pEntity) = NULL;
+#elif defined PLATFORM_WINDOWS
+void (__fastcall *g_pPhysics_SimulateEntity)(CBaseEntity *pEntity) = NULL;
+#endif
+
 void Physics_SimulateEntity_CustomLoop(CBaseEntity **ppList, int Count, float Startime)
 {
 	CBaseEntity *apPlayers[SM_MAXPLAYERS];
@@ -168,6 +193,7 @@ void Physics_SimulateEntity_CustomLoop(CBaseEntity **ppList, int Count, float St
 	// Post Player simulation done
 	if(g_pOnPostPlayerThinkFunctions->GetFunctionCount())
 	{
+		gpGlobals->curtime = Startime;
 		g_pOnPostPlayerThinkFunctions->Execute();
 	}
 
@@ -356,6 +382,8 @@ bool PhysHooks::SDK_OnLoad(char *error, size_t maxlength, bool late)
 
 	g_pDetour_RunThinkFunctions->EnableDetour();
 
+
+#if defined PLATFORM_LINUX
 	// Find VTable for CTriggerMoved
 	uintptr_t pCTriggerMoved;
 	if(!g_pGameConf->GetMemSig("CTriggerMoved", (void **)(&pCTriggerMoved)) || !pCTriggerMoved)
@@ -364,8 +392,6 @@ bool PhysHooks::SDK_OnLoad(char *error, size_t maxlength, bool late)
 		SDK_OnUnload();
 		return false;
 	}
-	// First function in VTable
-	g_CTriggerMoved = (CTriggerMoved *)(pCTriggerMoved + 8);
 
 	// Find VTable for CTouchLinks
 	uintptr_t pCTouchLinks;
@@ -375,8 +401,67 @@ bool PhysHooks::SDK_OnLoad(char *error, size_t maxlength, bool late)
 		SDK_OnUnload();
 		return false;
 	}
+
+#if SOURCE_ENGINE == SE_CSS
 	// First function in VTable
+	g_CTriggerMoved = (CTriggerMoved *)(pCTriggerMoved + 8);
 	g_CTouchLinks = (CTouchLinks *)(pCTouchLinks + 8);
+
+#elif SOURCE_ENGINE == SE_CSGO
+	// On Linux CSGO we can only find the typeinfo name '_ZTS' for the vtable
+	uintptr_t pCTriggerMoved_ZTS = pCTriggerMoved;
+	uintptr_t pCTouchLinks_ZTS = pCTouchLinks;
+
+	// This leads us to the first item in the typeinfo '_ZTI' if we search for a reference of '_ZTS' addr in reverse
+	uintptr_t pCTriggerMoved_ZTI = FindPattern(pCTriggerMoved_ZTS, (unsigned char *)&pCTriggerMoved_ZTS, "xxxx", 0x100, true);
+	uintptr_t pCTouchLinks_ZTI = FindPattern(pCTouchLinks_ZTS, (unsigned char *)&pCTouchLinks_ZTS, "xxxx", 0x100, true);
+	if(!pCTriggerMoved_ZTI || !pCTouchLinks_ZTI)
+	{
+		snprintf(error, maxlength, "Failed to FindPattern CTriggerMoved_ZTS or CTouchLinks_ZTI.\n");
+		SDK_OnUnload();
+		return false;
+	}
+
+	// The actual '_ZTI' is at -4 from the element we found inside it
+	pCTriggerMoved_ZTI -= 4;
+	pCTouchLinks_ZTI -= 4;
+
+	// Now we can search for a reference of '_ZTI' in reverse, it'll be the first item of our vtable / '_ZTV'
+	pCTriggerMoved = FindPattern(pCTriggerMoved_ZTI, (unsigned char *)&pCTriggerMoved_ZTI, "xxxx", 0x100, true);
+	pCTouchLinks = FindPattern(pCTouchLinks_ZTI, (unsigned char *)&pCTouchLinks_ZTI, "xxxx", 0x100, true);
+	if(!pCTriggerMoved || !pCTouchLinks)
+	{
+		snprintf(error, maxlength, "Failed to FindPattern CTriggerMoved_ZTV or CTouchLinks_ZTI.\n");
+		SDK_OnUnload();
+		return false;
+	}
+
+	// First function in VTable
+	g_CTriggerMoved = (CTriggerMoved *)(pCTriggerMoved + 4);
+	g_CTouchLinks = (CTouchLinks *)(pCTouchLinks + 4);
+#else
+#error "Unsupported platform"
+#endif
+
+#elif defined PLATFORM_WINDOWS
+	// Find VTable for CTriggerMoved
+	if(!g_pGameConf->GetAddress("CTriggerMoved", (void **)(&g_CTriggerMoved)) || !g_CTriggerMoved)
+	{
+		snprintf(error, maxlength, "Failed to find CTriggerMoved.\n");
+		SDK_OnUnload();
+		return false;
+	}
+
+	// Find VTable for CTouchLinks
+	if(!g_pGameConf->GetAddress("CTouchLinks", (void **)(&g_CTouchLinks)) || !g_CTouchLinks)
+	{
+		snprintf(error, maxlength, "Failed to find CTouchLinks.\n");
+		SDK_OnUnload();
+		return false;
+	}
+#else
+#error "Unsupported platform"
+#endif
 
 	g_SH_TriggerMoved = SH_ADD_DVPHOOK(CTriggerMoved, EnumElement, g_CTriggerMoved, SH_STATIC(TriggerMoved_EnumElement), false);
 	g_SH_TouchLinks = SH_ADD_DVPHOOK(CTouchLinks, EnumElement, g_CTouchLinks, SH_STATIC(TouchLinks_EnumElement), false);
@@ -391,30 +476,11 @@ bool PhysHooks::SDK_OnLoad(char *error, size_t maxlength, bool late)
 		return false;
 	}
 
-	void *pServerSo = dlopen("cstrike/bin/server_srv.so", RTLD_NOW);
-	if(!pServerSo)
-	{
-		snprintf(error, maxlength, "Could not dlopen server_srv.so");
-		SDK_OnUnload();
-		return false;
-	}
-
-	void *pEngineSo = dlopen("bin/engine_srv.so", RTLD_NOW);
-	if(!pEngineSo)
-	{
-		snprintf(error, maxlength, "Could not dlopen engine_srv.so");
-		dlclose(pServerSo);
-		SDK_OnUnload();
-		return false;
-	}
-
 	/* Hook: Replace call inside Physics_RunThinkFunctions */
-	uintptr_t pAddress = (uintptr_t)memutils->ResolveSymbol(pServerSo, gs_Patches[0].pSignature);
-	if(!pAddress)
+	uintptr_t pAddress;
+	if(!g_pGameConf->GetMemSig(gs_Patches[0].pSignature, (void **)&pAddress) || !pAddress)
 	{
-		snprintf(error, maxlength, "Could not find symbol: %s", gs_Patches[0].pSignature);
-		dlclose(pServerSo);
-		dlclose(pEngineSo);
+		snprintf(error, maxlength, "Failed to find Physics_RunThinkFunctions address.\n");
 		SDK_OnUnload();
 		return false;
 	}
@@ -423,19 +489,17 @@ bool PhysHooks::SDK_OnLoad(char *error, size_t maxlength, bool late)
 	if(!pPatchAddress)
 	{
 		snprintf(error, maxlength, "Could not find patch signature for symbol: %s", gs_Patches[0].pSignature);
-		dlclose(pServerSo);
-		dlclose(pEngineSo);
 		SDK_OnUnload();
 		return false;
 	}
 
+#if SOURCE_ENGINE == SE_CSS && defined PLATFORM_LINUX
 	// mov [esp+8], edi ; startime
 	// mov [esp+4], eax ; count
 	// mov [esp], esi ; **list
 	// call NULL ; <- our func here
-	// mov eax, ds:gpGlobals ; restore
-	// jmp +11 ; jump over useless instructions
-	static unsigned char aPatch[] = "\x89\x7C\x24\x08\x89\x44\x24\x04\x89\x34\x24\xE8\x00\x00\x00\x00\xA1\x00\x00\x00\x00\xEB\x0B\x90\x90\x90";
+	// jmp +16 ; jump over useless instructions
+	static unsigned char aPatch[] = "\x89\x7C\x24\x08\x89\x44\x24\x04\x89\x34\x24\xE8\x00\x00\x00\x00\xEB\x10\x90\x90\x90\x90\x90\x90\x90\x90";
 	gs_Patches[0].pPatch = aPatch;
 
 	// put our function address into the relative call instruction
@@ -443,9 +507,40 @@ bool PhysHooks::SDK_OnLoad(char *error, size_t maxlength, bool late)
 	// call is at + 11 after pPatchAddress
 	// PC will be past our call instruction so + 5
 	*(uintptr_t *)&aPatch[12] = (uintptr_t)Physics_SimulateEntity_CustomLoop - (pPatchAddress + 11 + 5);
+#elif SOURCE_ENGINE == SE_CSGO && defined PLATFORM_LINUX
+	// mov [esp+8], edi ; startime
+	// mov [esp+4], eax ; count
+	// mov [esp], esi ; **list
+	// call NULL ; <- our func here
+	// jmp +9 ; jump over useless instructions
+	static unsigned char aPatch[] = "\x89\x7C\x24\x08\x89\x44\x24\x04\x89\x34\x24\xE8\x00\x00\x00\x00\xEB\x09\x90\x90\x90\x90\x90\x90\x90\x90\x90";
+	gs_Patches[0].pPatch = aPatch;
 
-	// restore "mov eax, ds:gpGlobals" from original to our patch after the call
-	*(uintptr_t *)&aPatch[17] = *(uintptr_t *)(pPatchAddress + 8);
+	// put our function address into the relative call instruction
+	// relative call: new PC = PC + imm1
+	// call is at + 11 after pPatchAddress
+	// PC will be past our call instruction so + 5
+	*(uintptr_t *)&aPatch[12] = (uintptr_t)Physics_SimulateEntity_CustomLoop - (pPatchAddress + 11 + 5);
+#elif SOURCE_ENGINE == SE_CSGO && defined PLATFORM_WINDOWS
+	// sub esp, 4 ; allocate room on stack for startime
+	// movss xmm0, [ebp-4] ; startime from stack into FP register
+	// movss DWORD PTR [esp], xmm0 ; startime
+	// push eax ; count
+	// push ebx ; **list
+	// call NULL ; <- our func here
+	// add esp, 12 ; fix up stack
+	// jmp +17 ; jump over useless instructions
+	static unsigned char aPatch[] = "\x83\xEC\x04\xF3\x0F\x10\x45\xFC\xF3\x0F\x11\x04\x24\x50\x53\xE8\x00\x00\x00\x00\x83\xC4\x0C\xEB\x11\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90";
+	gs_Patches[0].pPatch = aPatch;
+
+	// put our function address into the relative call instruction
+	// relative call: new PC = PC + imm1
+	// call is at + 15 after pPatchAddress
+	// PC will be past our call instruction so + 5
+	*(uintptr_t *)&aPatch[16] = (uintptr_t)Physics_SimulateEntity_CustomLoop - (pPatchAddress + 15 + 5);
+#else
+#error "Unsupported platform"
+#endif
 
 	// Apply all patches
 	for(size_t i = 0; i < sizeof(gs_Patches) / sizeof(*gs_Patches); i++)
@@ -453,13 +548,9 @@ bool PhysHooks::SDK_OnLoad(char *error, size_t maxlength, bool late)
 		struct SrcdsPatch *pPatch = &gs_Patches[i];
 		int PatchLen = strlen(pPatch->pPatchPattern);
 
-		void *pBinary = pPatch->engine ? pEngineSo : pServerSo;
-		pPatch->pAddress = (uintptr_t)memutils->ResolveSymbol(pBinary, pPatch->pSignature);
-		if(!pPatch->pAddress)
+		if(!g_pGameConf->GetMemSig(pPatch->pSignature, (void **)&pPatch->pAddress) || !pPatch->pAddress)
 		{
 			snprintf(error, maxlength, "Could not find symbol: %s", pPatch->pSignature);
-			dlclose(pServerSo);
-			dlclose(pEngineSo);
 			SDK_OnUnload();
 			return false;
 		}
@@ -468,8 +559,6 @@ bool PhysHooks::SDK_OnLoad(char *error, size_t maxlength, bool late)
 		if(!pPatch->pPatchAddress)
 		{
 			snprintf(error, maxlength, "Could not find patch signature for symbol: %s", pPatch->pSignature);
-			dlclose(pServerSo);
-			dlclose(pEngineSo);
 			SDK_OnUnload();
 			return false;
 		}
@@ -484,9 +573,6 @@ bool PhysHooks::SDK_OnLoad(char *error, size_t maxlength, bool late)
 		}
 		SourceHook::SetMemAccess((void *)pPatch->pPatchAddress, PatchLen, SH_MEM_READ|SH_MEM_EXEC);
 	}
-
-	dlclose(pServerSo);
-	dlclose(pEngineSo);
 
 	g_pOnRunThinkFunctions = forwards->CreateForward("OnRunThinkFunctions", ET_Ignore, 1, NULL, Param_Cell);
 	g_pOnPrePlayerThinkFunctions = forwards->CreateForward("OnPrePlayerThinkFunctions", ET_Ignore, 0, NULL);
@@ -582,23 +668,35 @@ bool PhysHooks::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, boo
 	return true;
 }
 
-uintptr_t FindPattern(uintptr_t BaseAddr, const unsigned char *pData, const char *pPattern, size_t MaxSize)
+uintptr_t FindPattern(uintptr_t BaseAddr, const unsigned char *pData, const char *pPattern, size_t MaxSize, bool Reverse)
 {
 	unsigned char *pMemory;
 	uintptr_t PatternLen = strlen(pPattern);
 
 	pMemory = reinterpret_cast<unsigned char *>(BaseAddr);
 
-	for(uintptr_t i = 0; i < MaxSize; i++)
-	{
-		uintptr_t Matches = 0;
-		while(*(pMemory + i + Matches) == pData[Matches] || pPattern[Matches] != 'x')
+	if(!Reverse)
+		for(uintptr_t i = 0; i < MaxSize; i++)
 		{
-			Matches++;
-			if(Matches == PatternLen)
-				return (uintptr_t)(pMemory + i);
+			uintptr_t Matches = 0;
+			while(*(pMemory + i + Matches) == pData[Matches] || pPattern[Matches] != 'x')
+			{
+				Matches++;
+				if(Matches == PatternLen)
+					return (uintptr_t)(pMemory + i);
+			}
 		}
-	}
+	else
+		for(uintptr_t i = 0; i < MaxSize; i++)
+		{
+			uintptr_t Matches = 0;
+			while(*(pMemory - i + Matches) == pData[Matches] || pPattern[Matches] != 'x')
+			{
+				Matches++;
+				if(Matches == PatternLen)
+					return (uintptr_t)(pMemory - i);
+			}
+		}
 
 	return 0x00;
 }
