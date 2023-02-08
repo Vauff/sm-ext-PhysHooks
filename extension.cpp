@@ -31,8 +31,6 @@
 
 #include "extension.h"
 #include "CDetour/detours.h"
-#include <sourcehook.h>
-#include <sh_memory.h>
 #include <server_class.h>
 #include <ispatialpartition.h>
 
@@ -52,48 +50,6 @@ public:
 	virtual IterationRetval_t EnumElement( IHandleEntity *pHandleEntity ) = 0;
 };
 
-struct SrcdsPatch
-{
-	const char *pSignature;
-	const unsigned char *pPatchSignature;
-	const char *pPatchPattern;
-	const unsigned char *pPatch;
-
-	unsigned char *pOriginal;
-	uintptr_t pAddress;
-	uintptr_t pPatchAddress;
-	bool engine;
-} gs_Patches[] = {
-	// Hook: Replace call inside Physics_RunThinkFunctions
-#if SOURCE_ENGINE == SE_CSS && defined PLATFORM_LINUX
-	{
-		"Physics_RunThinkFunctions",
-		(unsigned char *)"\x8B\x04\x9E\x85\xC0\x74\x13\xA1\x00\x00\x00\x00\x89\x78\x0C\x8B\x04\x9E\x89\x04\x24\xE8\x00\x00\x00\x00",
-		"xxxxxxxx????xxxxxxxxxx????",
-		NULL,
-		0, 0, 0, false
-	}
-#elif SOURCE_ENGINE == SE_CSGO && defined PLATFORM_LINUX
-	{
-		"Physics_RunThinkFunctions",
-		(unsigned char *)"\xA1\x5C\xD8\x42\x01\x89\x78\x10\x8B\x04\x9E\x89\x04\x24\xE8\xAD\xFC\xFF\xFF\x83\xC3\x01\x3B\x5D\xD4\x75\xE5",
-		"x????xxxxxxxxxx????xxxxxxxx",
-		NULL,
-		0, 0, 0, false
-	}
-#elif SOURCE_ENGINE == SE_CSGO && defined PLATFORM_WINDOWS
-	{
-		"Physics_RunThinkFunctions",
-		(unsigned char *)"\x8B\xF0\x8B\x0D\xD0\x52\xA3\x10\xF3\x0F\x10\x45\xFC\xF3\x0F\x11\x41\x10\x8B\x0C\xBB\xE8\x18\xFE\xFF\xFF\x47\x3B\xFE\x7C\xE3\x8B\x75\xF4",
-		"xxxx????xxxxxxxxxxxxxx????xxxxxxxx",
-		NULL,
-		0, 0, 0, false
-	}
-#else
-#error "Unsupported platform"
-#endif
-};
-
 uintptr_t FindPattern(uintptr_t BaseAddr, const unsigned char *pData, const char *pPattern, size_t MaxSize, bool Reverse=false);
 
 /**
@@ -109,6 +65,7 @@ CGlobalVars *gpGlobals = NULL;
 IGameConfig *g_pGameConf = NULL;
 
 CDetour *g_pDetour_RunThinkFunctions = NULL;
+CDetour *g_pDetour_SimThink_ListCopy = NULL;
 
 IForward *g_pOnRunThinkFunctions = NULL;
 IForward *g_pOnPrePlayerThinkFunctions = NULL;
@@ -207,6 +164,13 @@ void Physics_SimulateEntity_CustomLoop(CBaseEntity **ppList, int Count, float St
 		gpGlobals->curtime = Startime;
 		g_pPhysics_SimulateEntity(pEntity);
 	}
+}
+
+DETOUR_DECL_STATIC2(DETOUR_SimThink_ListCopy, int, CBaseEntity **, ppList, int, listMax)
+{
+	int count = DETOUR_STATIC_CALL(DETOUR_SimThink_ListCopy)(ppList, listMax);
+	Physics_SimulateEntity_CustomLoop(ppList, count, gpGlobals->curtime);
+	return 0;
 }
 
 int g_TriggerEntityMoved;
@@ -379,9 +343,16 @@ bool PhysHooks::SDK_OnLoad(char *error, size_t maxlength, bool late)
 		SDK_OnUnload();
 		return false;
 	}
-
 	g_pDetour_RunThinkFunctions->EnableDetour();
 
+	g_pDetour_SimThink_ListCopy = DETOUR_CREATE_STATIC(DETOUR_SimThink_ListCopy, "SimThink_ListCopy");
+	if(g_pDetour_SimThink_ListCopy == NULL)
+	{
+		snprintf(error, maxlength, "Could not create detour for SimThink_ListCopy");
+		SDK_OnUnload();
+		return false;
+	}
+	g_pDetour_SimThink_ListCopy->EnableDetour();
 
 #if defined PLATFORM_LINUX
 	// Find VTable for CTriggerMoved
@@ -413,8 +384,8 @@ bool PhysHooks::SDK_OnLoad(char *error, size_t maxlength, bool late)
 	uintptr_t pCTouchLinks_ZTS = pCTouchLinks;
 
 	// This leads us to the first item in the typeinfo '_ZTI' if we search for a reference of '_ZTS' addr in reverse
-	uintptr_t pCTriggerMoved_ZTI = FindPattern(pCTriggerMoved_ZTS, (unsigned char *)&pCTriggerMoved_ZTS, "xxxx", 0x100, true);
-	uintptr_t pCTouchLinks_ZTI = FindPattern(pCTouchLinks_ZTS, (unsigned char *)&pCTouchLinks_ZTS, "xxxx", 0x100, true);
+	uintptr_t pCTriggerMoved_ZTI = FindPattern(pCTriggerMoved_ZTS, (unsigned char *)&pCTriggerMoved_ZTS, "xxxx", 0x100, false);
+	uintptr_t pCTouchLinks_ZTI = FindPattern(pCTouchLinks_ZTS, (unsigned char *)&pCTouchLinks_ZTS, "xxxx", 0x100, false);
 	if(!pCTriggerMoved_ZTI || !pCTouchLinks_ZTI)
 	{
 		snprintf(error, maxlength, "Failed to FindPattern CTriggerMoved_ZTS or CTouchLinks_ZTI.\n");
@@ -427,8 +398,8 @@ bool PhysHooks::SDK_OnLoad(char *error, size_t maxlength, bool late)
 	pCTouchLinks_ZTI -= 4;
 
 	// Now we can search for a reference of '_ZTI' in reverse, it'll be the first item of our vtable / '_ZTV'
-	pCTriggerMoved = FindPattern(pCTriggerMoved_ZTI, (unsigned char *)&pCTriggerMoved_ZTI, "xxxx", 0x100, true);
-	pCTouchLinks = FindPattern(pCTouchLinks_ZTI, (unsigned char *)&pCTouchLinks_ZTI, "xxxx", 0x100, true);
+	pCTriggerMoved = FindPattern(pCTriggerMoved_ZTI, (unsigned char *)&pCTriggerMoved_ZTI, "xxxx", 0x100, false);
+	pCTouchLinks = FindPattern(pCTouchLinks_ZTI, (unsigned char *)&pCTouchLinks_ZTI, "xxxx", 0x100, false);
 	if(!pCTriggerMoved || !pCTouchLinks)
 	{
 		snprintf(error, maxlength, "Failed to FindPattern CTriggerMoved_ZTV or CTouchLinks_ZTI.\n");
@@ -476,104 +447,6 @@ bool PhysHooks::SDK_OnLoad(char *error, size_t maxlength, bool late)
 		return false;
 	}
 
-	/* Hook: Replace call inside Physics_RunThinkFunctions */
-	uintptr_t pAddress;
-	if(!g_pGameConf->GetMemSig(gs_Patches[0].pSignature, (void **)&pAddress) || !pAddress)
-	{
-		snprintf(error, maxlength, "Failed to find Physics_RunThinkFunctions address.\n");
-		SDK_OnUnload();
-		return false;
-	}
-
-	uintptr_t pPatchAddress = FindPattern(pAddress, gs_Patches[0].pPatchSignature, gs_Patches[0].pPatchPattern, 1024);
-	if(!pPatchAddress)
-	{
-		snprintf(error, maxlength, "Could not find patch signature for symbol: %s", gs_Patches[0].pSignature);
-		SDK_OnUnload();
-		return false;
-	}
-
-#if SOURCE_ENGINE == SE_CSS && defined PLATFORM_LINUX
-	// mov [esp+8], edi ; startime
-	// mov [esp+4], eax ; count
-	// mov [esp], esi ; **list
-	// call NULL ; <- our func here
-	// jmp +16 ; jump over useless instructions
-	static unsigned char aPatch[] = "\x89\x7C\x24\x08\x89\x44\x24\x04\x89\x34\x24\xE8\x00\x00\x00\x00\xEB\x10\x90\x90\x90\x90\x90\x90\x90\x90";
-	gs_Patches[0].pPatch = aPatch;
-
-	// put our function address into the relative call instruction
-	// relative call: new PC = PC + imm1
-	// call is at + 11 after pPatchAddress
-	// PC will be past our call instruction so + 5
-	*(uintptr_t *)&aPatch[12] = (uintptr_t)Physics_SimulateEntity_CustomLoop - (pPatchAddress + 11 + 5);
-#elif SOURCE_ENGINE == SE_CSGO && defined PLATFORM_LINUX
-	// mov [esp+8], edi ; startime
-	// mov [esp+4], eax ; count
-	// mov [esp], esi ; **list
-	// call NULL ; <- our func here
-	// jmp +9 ; jump over useless instructions
-	static unsigned char aPatch[] = "\x89\x7C\x24\x08\x89\x44\x24\x04\x89\x34\x24\xE8\x00\x00\x00\x00\xEB\x09\x90\x90\x90\x90\x90\x90\x90\x90\x90";
-	gs_Patches[0].pPatch = aPatch;
-
-	// put our function address into the relative call instruction
-	// relative call: new PC = PC + imm1
-	// call is at + 11 after pPatchAddress
-	// PC will be past our call instruction so + 5
-	*(uintptr_t *)&aPatch[12] = (uintptr_t)Physics_SimulateEntity_CustomLoop - (pPatchAddress + 11 + 5);
-#elif SOURCE_ENGINE == SE_CSGO && defined PLATFORM_WINDOWS
-	// sub esp, 4 ; allocate room on stack for startime
-	// movss xmm0, [ebp-4] ; startime from stack into FP register
-	// movss DWORD PTR [esp], xmm0 ; startime
-	// push eax ; count
-	// push ebx ; **list
-	// call NULL ; <- our func here
-	// add esp, 12 ; fix up stack
-	// jmp +9 ; jump over useless instructions
-	static unsigned char aPatch[] = "\x83\xEC\x04\xF3\x0F\x10\x45\xFC\xF3\x0F\x11\x04\x24\x50\x53\xE8\x00\x00\x00\x00\x83\xC4\x0C\xEB\x09\x90\x90\x90\x90\x90\x90\x90\x90\x90";
-	gs_Patches[0].pPatch = aPatch;
-
-	// put our function address into the relative call instruction
-	// relative call: new PC = PC + imm1
-	// call is at + 15 after pPatchAddress
-	// PC will be past our call instruction so + 5
-	*(uintptr_t *)&aPatch[16] = (uintptr_t)Physics_SimulateEntity_CustomLoop - (pPatchAddress + 15 + 5);
-#else
-#error "Unsupported platform"
-#endif
-
-	// Apply all patches
-	for(size_t i = 0; i < sizeof(gs_Patches) / sizeof(*gs_Patches); i++)
-	{
-		struct SrcdsPatch *pPatch = &gs_Patches[i];
-		int PatchLen = strlen(pPatch->pPatchPattern);
-
-		if(!g_pGameConf->GetMemSig(pPatch->pSignature, (void **)&pPatch->pAddress) || !pPatch->pAddress)
-		{
-			snprintf(error, maxlength, "Could not find symbol: %s", pPatch->pSignature);
-			SDK_OnUnload();
-			return false;
-		}
-
-		pPatch->pPatchAddress = FindPattern(pPatch->pAddress, pPatch->pPatchSignature, pPatch->pPatchPattern, 1024);
-		if(!pPatch->pPatchAddress)
-		{
-			snprintf(error, maxlength, "Could not find patch signature for symbol: %s", pPatch->pSignature);
-			SDK_OnUnload();
-			return false;
-		}
-
-		pPatch->pOriginal = (unsigned char *)malloc(PatchLen * sizeof(unsigned char));
-
-		SourceHook::SetMemAccess((void *)pPatch->pPatchAddress, PatchLen, SH_MEM_READ|SH_MEM_WRITE|SH_MEM_EXEC);
-		for(int j = 0; j < PatchLen; j++)
-		{
-			pPatch->pOriginal[j] = *(unsigned char *)(pPatch->pPatchAddress + j);
-			*(unsigned char *)(pPatch->pPatchAddress + j) = pPatch->pPatch[j];
-		}
-		SourceHook::SetMemAccess((void *)pPatch->pPatchAddress, PatchLen, SH_MEM_READ|SH_MEM_EXEC);
-	}
-
 	g_pOnRunThinkFunctions = forwards->CreateForward("OnRunThinkFunctions", ET_Ignore, 1, NULL, Param_Cell);
 	g_pOnPrePlayerThinkFunctions = forwards->CreateForward("OnPrePlayerThinkFunctions", ET_Ignore, 0, NULL);
 	g_pOnPostPlayerThinkFunctions = forwards->CreateForward("OnPostPlayerThinkFunctions", ET_Ignore, 0, NULL);
@@ -603,6 +476,12 @@ void PhysHooks::SDK_OnUnload()
 	{
 		g_pDetour_RunThinkFunctions->Destroy();
 		g_pDetour_RunThinkFunctions = NULL;
+	}
+
+	if(g_pDetour_SimThink_ListCopy != NULL)
+	{
+		g_pDetour_SimThink_ListCopy->Destroy();
+		g_pDetour_SimThink_ListCopy = NULL;
 	}
 
 	if(g_pOnRunThinkFunctions != NULL)
@@ -639,26 +518,6 @@ void PhysHooks::SDK_OnUnload()
 	SH_REMOVE_HOOK(IVEngineServer, SolidMoved, engine, SH_STATIC(SolidMoved), false);
 
 	gameconfs->CloseGameConfigFile(g_pGameConf);
-
-	// Revert all applied patches
-	for(size_t i = 0; i < sizeof(gs_Patches) / sizeof(*gs_Patches); i++)
-	{
-		struct SrcdsPatch *pPatch = &gs_Patches[i];
-		int PatchLen = strlen(pPatch->pPatchPattern);
-
-		if(!pPatch->pOriginal)
-			continue;
-
-		SourceHook::SetMemAccess((void *)pPatch->pPatchAddress, PatchLen, SH_MEM_READ|SH_MEM_WRITE|SH_MEM_EXEC);
-		for(int j = 0; j < PatchLen; j++)
-		{
-			*(unsigned char *)(pPatch->pPatchAddress + j) = pPatch->pOriginal[j];
-		}
-		SourceHook::SetMemAccess((void *)pPatch->pPatchAddress, PatchLen, SH_MEM_READ|SH_MEM_EXEC);
-
-		free(pPatch->pOriginal);
-		pPatch->pOriginal = NULL;
-	}
 }
 
 bool PhysHooks::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool late)
