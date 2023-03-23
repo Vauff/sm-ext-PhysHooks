@@ -41,7 +41,7 @@ public Extension __ext_PhysHooks =
 };
 
 #if !defined REQUIRE_EXTENSIONS
-public __ext_PhysHooks_SetNTVOptional()
+public void __ext_PhysHooks_SetNTVOptional()
 {
 }
 #endif
