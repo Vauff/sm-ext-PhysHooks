@@ -8,15 +8,27 @@ builder.SetBuildFolder('package')
 # Add any folders you need to this list
 folder_list = [
   'addons/sourcemod/extensions',
-  'addons/sourcemod/include',
-  'addons/sourcemod/gamedata',
+  'addons/sourcemod/scripting/include',
+  'addons/sourcemod/gamedata'
 ]
+
+if 'x86_64' in SM.target_archs:
+  folder_list.extend([
+    'addons/sourcemod/extensions/x64',
+  ])
 
 # Create the distribution folder hierarchy.
 folder_map = {}
 for folder in folder_list:
   norm_folder = os.path.normpath(folder)
   folder_map[folder] = builder.AddFolder(norm_folder)
+
+# Copy binaries.
+for cxx_task in SM.extensions:
+  if cxx_task.target.arch == 'x86_64':
+    builder.AddCopy(cxx_task.binary, folder_map['addons/sourcemod/extensions/x64'])
+  else:
+    builder.AddCopy(cxx_task.binary, folder_map['addons/sourcemod/extensions'])
 
 # Do all straight-up file copies from the source tree.
 def CopyFiles(src, dest, files):
@@ -25,10 +37,12 @@ def CopyFiles(src, dest, files):
   dest_entry = folder_map[dest]
   for source_file in files:
     source_path = os.path.join(builder.sourcePath, src, source_file)
-    builder.AddCopy(source_path, dest_entry)
+    dest_path = os.path.join(dest_entry.path, source_file)
+    if not os.path.isfile(str(dest_path)):
+      builder.AddCopy(source_path, dest_entry)
 
 # Include files
-CopyFiles('include', 'addons/sourcemod/include',
+CopyFiles('include', 'addons/sourcemod/scripting/include',
   [ 'PhysHooks.inc', ]
 )
 
@@ -36,7 +50,3 @@ CopyFiles('include', 'addons/sourcemod/include',
 CopyFiles('gamedata', 'addons/sourcemod/gamedata',
   [ 'PhysHooks.games.txt' ]
 )
-
-# Copy binaries.
-for cxx_task in Extension.extensions:
-  builder.AddCopy(cxx_task.binary, folder_map['addons/sourcemod/extensions'])
