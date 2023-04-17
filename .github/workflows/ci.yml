@@ -74,7 +74,7 @@ jobs:
           BREAKPAD_SYMBOL_SERVER: ${{ secrets.BREAKPAD_SYMBOL_SERVER }}
         run: |
           mkdir build && cd build
-          python ../configure.py --enable-optimize --sdks=${{ matrix.sdks }}
+          python ../configure.py --enable-optimize --symbol-files --sdks=${{ matrix.sdks }}
           ambuild
 
       - name: Upload artifact
