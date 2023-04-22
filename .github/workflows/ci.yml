@@ -53,19 +53,14 @@ jobs:
           path: sourcemod
           submodules: recursive
 
-      - name: Checkout AMBuild
-        uses: actions/checkout@v3
-        with:
-          repository: alliedmodders/ambuild
-          path: ambuild
+      - name: Install AMBuild
+        run: |
+          python -m pip install wheel
+          pip install git+https://github.com/alliedmodders/ambuild
 
       - name: Install sourcemod dependencies
         run: |
           bash sourcemod/tools/checkout-deps.sh -m -s ${{ matrix.sdks }}
-
-      - name: Install AMBuild
-        run: |
-          pip install ./ambuild
 
       - name: Build
         working-directory: extension
