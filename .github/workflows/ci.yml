@@ -19,13 +19,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-20.04, windows-2019]
-        sourcemod-version: [1.11-dev]
-        python-version: ['3.10']
+        os: [ubuntu-20.04, windows-2022]
+        sourcemod-version: [1.12-dev]
+        python-version: ['3.11']
         include:
           - os: ubuntu-20.04
-            sdks: css,csgo
-          - os: windows-2019
+            sdks: 'css csgo'
+          - os: windows-2022
             sdks: csgo
 
     steps:
@@ -36,17 +36,17 @@ jobs:
           sudo apt install -yq --no-install-recommends g++-multilib
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           path: extension
 
       - name: Checkout SourceMod
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           repository: alliedmodders/sourcemod
           ref: ${{ matrix.sourcemod-version }}
@@ -60,7 +60,7 @@ jobs:
 
       - name: Install sourcemod dependencies
         run: |
-          bash sourcemod/tools/checkout-deps.sh -m -s ${{ matrix.sdks }}
+          bash sourcemod/tools/checkout-deps.sh -m -s "${{ matrix.sdks }}"
 
       - name: Build
         working-directory: extension
@@ -69,11 +69,11 @@ jobs:
           BREAKPAD_SYMBOL_SERVER: ${{ secrets.BREAKPAD_SYMBOL_SERVER }}
         run: |
           mkdir build && cd build
-          python ../configure.py --enable-optimize --symbol-files --sdks=${{ matrix.sdks }}
+          python ../configure.py --enable-optimize --symbol-files --sdks="${{ matrix.sdks }}"
           ambuild
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ runner.os }}
           path: extension/build/package
@@ -86,7 +86,7 @@ jobs:
 
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
 
       - name: Package
         run: |
