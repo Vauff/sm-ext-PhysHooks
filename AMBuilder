@@ -1,47 +1,22 @@
 # vim: set sts=2 ts=8 sw=2 tw=99 et ft=python:
-import os
+import os, sys
 
-projectName = 'PhysHooks'
+projectname = 'PhysHooks'
 
-for cxx in builder.targets:
-  for sdk_name in SM.sdks:
-    sdk = SM.sdks[sdk_name]
+project = builder.LibraryProject(projectname + '.ext')
+project.sources = [
+  'extension.cpp',
+  os.path.join(Extension.sm_root, 'public', 'smsdk_ext.cpp'),
+]
 
+for sdk_name in Extension.sdks:
+  sdk = Extension.sdks[sdk_name]
+
+  for cxx in builder.targets:
     if not cxx.target.arch in sdk.platformSpec[cxx.target.platform]:
       continue
-
-    binary = SM.HL2Library(builder, cxx, projectName + '.ext.' + sdk.ext, sdk)
-
-    binary.compiler.defines += [
-      'HAVE_STRING_H',
-    ]
-
-    if cxx.target.platform == 'linux':
-      cxx.postlink += ['-lpthread', '-lrt']
-    elif cxx.target.platform == 'mac':
-      cxx.cflags += ['-Wno-deprecated-declarations']
-      cxx.postlink += ['-framework', 'CoreServices']
-
-    if cxx.family == 'gcc' or cxx.family == 'clang':
-      cxx.cxxflags += ['-fno-rtti']
-    elif cxx.family == 'msvc':
-      cxx.cxxflags += ['/GR-']
-
-    binary.sources += [
-      'extension.cpp',
-      os.path.join(SM.sm_root, 'public', 'smsdk_ext.cpp'),
-      os.path.join(SM.sm_root, 'public', 'CDetour', 'detours.cpp'),
-      os.path.join(SM.sm_root, 'public', 'asm', 'asm.c'),
-      os.path.join(SM.sm_root, 'public', 'libudis86', 'decode.c'),
-      os.path.join(SM.sm_root, 'public', 'libudis86', 'itab.c'),
-      os.path.join(SM.sm_root, 'public', 'libudis86', 'syn-att.c'),
-      os.path.join(SM.sm_root, 'public', 'libudis86', 'syn-intel.c'),
-      os.path.join(SM.sm_root, 'public', 'libudis86', 'syn.c'),
-      os.path.join(SM.sm_root, 'public', 'libudis86', 'udis86.c'),
-    ]
   
-    binary.compiler.cxxincludes += [
-      os.path.join(sdk.path, 'game', 'server'),
-    ]
+    binary = Extension.HL2ExtConfig(project, builder, cxx, projectname + '.ext.' + sdk.ext, sdk)
+    Extension.AddCDetour(binary)
 
-    SM.extensions += [builder.Add(binary)]
+Extension.extensions = builder.Add(project)
